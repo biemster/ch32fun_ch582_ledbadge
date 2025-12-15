@@ -9,6 +9,21 @@
 #define PIN_KEY1_INT       PIN_KEY1
 #define PIN_KEY2           PB22
 #define PIN_KEY2_INT       PB8 // ch582 is weird, PB22 interrupt comes in on PB8 bit in irq flag
+#define ADC_VBAT_CHANNEL   14
+
+typedef enum {
+	ADC_FREQ_DIV_10 = 0b00,		// 32/10 = 3.2MHz
+	ADC_FREQ_DIV_4 = 0b01,		// 32/4 = 8MHz
+	ADC_FREQ_DIV_6 = 0b10,		// 32/6 = 5.33MHz - Default
+	ADC_FREQ_DIV_8 = 0b11		// 32/8 = 4MHz
+} ADC_FREQ_DIV_t;
+
+typedef enum {
+	ADC_PGA_GAIN_1_4 = 0b00,	// -12dB 1/4 	range: 2.9V ~ VIO33
+	ADC_PGA_GAIN_1_2 = 0b01,	// -6dB 1/2 	range: 1.9V ~ 3V
+	ADC_PGA_GAIN_1 = 0b10,		// 0dB 1 		range: 0V ~ 2V - Default
+	ADC_PGA_GAIN_2 = 0b11		// 6dB 2		range: 0.6V ~ 1.5V
+} ADC_PGA_GAIN_t;
 
 typedef enum {
 	IRQ_NONE = 0,
@@ -16,7 +31,9 @@ typedef enum {
 	IRQ_KEY1,
 	IRQ_KEY2,
 } irq_source;
+
 static volatile irq_source wakeup_source;
+static volatile int gs_vbat_mV;
 
 
 void blink(int n) {
@@ -99,6 +116,17 @@ void GPIOSetup() {
 	);
 }
 
+void update_battery_voltage_mV() {
+	R8_ADC_CHANNEL = ADC_VBAT_CHANNEL;
+	R8_TKEY_CFG &= ~RB_TKEY_PWR_ON;
+	R8_ADC_CFG = RB_ADC_POWER_ON | (ADC_PGA_GAIN_1_4 << 4) | (ADC_FREQ_DIV_10 << 6);
+
+	R8_ADC_CONVERT |= RB_ADC_START;
+	while( R8_ADC_CONVERT & RB_ADC_START );
+
+	gs_vbat_mV = ((1050 * R16_ADC_DATA) / 512) - (1050 * 3); // -12dB: vref * (raw/512 - 3)
+}
+
 
 int main() {
 	SystemInit();
@@ -122,6 +150,7 @@ int main() {
 		switch(wakeup_source) {
 		case IRQ_RTC:
 			blink(1);
+			update_battery_voltage_mV();
 			break;
 		case IRQ_KEY1:
 			break;
