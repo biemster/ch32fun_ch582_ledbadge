@@ -3,7 +3,6 @@
 
 #define WAKEUP_INTERVAL_MS (3 * 1000) // 3 seconds
 
-#define LED                PA8 // DEBUG led on board, not on badge
 #define PIN_CHARGE_STT     PA0
 #define PIN_CHARGE_STT_INT PIN_CHARGE_STT
 #define PIN_KEY1           PA1
@@ -63,16 +62,30 @@ static volatile int gs_vbat_mV;
 #define LINE_V PB20
 #define LINE_W PB19
 
+static u32 led_lines[] = {
+	LINE_A, LINE_B, LINE_C, LINE_D, LINE_E,
+	LINE_F, LINE_G, LINE_H, LINE_I, LINE_J,
+	LINE_K, LINE_L, LINE_M, LINE_N, LINE_O,
+	LINE_P, LINE_Q, LINE_R, LINE_S, LINE_T,
+	LINE_U, LINE_V, LINE_W
+};
+#define NLINES (sizeof(led_lines) / sizeof(u32))
 
-// this blink should be removed after development is complete, just for debug
-// however LowPowerIdle needs to be called once before LowPower(Sleep) works,
-// so that will have to be added in main()
+
 void blink(int n) {
+	for(int i = 0; i < NLINES; i++) {
+		funPinMode( led_lines[i], GPIO_CFGLR_IN_FLOAT );
+	}
+
 	for(int i = n-1; i >= 0; i--) {
-		funDigitalWrite( LED, FUN_LOW ); // Turn on LED
-		LowPowerIdle( MS_TO_RTC(33) ); // why was this necessary again, instead of Delay_Ms, when sleeping?
-		funDigitalWrite( LED, FUN_HIGH ); // Turn off LED
-		if(i) LowPowerIdle( MS_TO_RTC(33) );
+		funPinMode( LINE_E, GPIO_CFGLR_OUT_2Mhz_PP );
+		funPinMode( LINE_F, GPIO_CFGLR_OUT_2Mhz_PP );
+		funDigitalWrite(LINE_E, FUN_HIGH);
+		funDigitalWrite(LINE_F, FUN_LOW);
+		LowPowerIdle( MS_TO_RTC(3) );
+		funPinMode( LINE_E, GPIO_CFGLR_IN_FLOAT );
+		funPinMode( LINE_F, GPIO_CFGLR_IN_FLOAT );
+		if(i) LowPowerIdle( MS_TO_RTC(97) );
 	}
 }
 
@@ -127,21 +140,14 @@ void GPIOSetup() {
 	funPinMode( PIN_KEY2, GPIO_CFGLR_IN_PU ); // Set PIN_KEY2 to input, pullup as keypress is to gnd
 	funPinMode( PIN_CHARGE_STT, GPIO_CFGLR_IN_PU ); // Set PIN_CHARGE_STT to input, pullup as connecting charger makes this go to gnd
 
-	// key1 interrupt
-	R16_PA_INT_MODE |= (PIN_KEY1_INT); // edge mode, should go to ch32fun.h
+	// key1 and charge stt interrupts
+	R16_PA_INT_MODE |= (PIN_KEY1_INT | PIN_CHARGE_STT_INT); // edge mode, should go to ch32fun.h
 	funDigitalWrite(PIN_KEY1, FUN_HIGH); // rising edge
-
-	NVIC_EnableIRQ(GPIOA_IRQn);
-	R16_PA_INT_IF = (PIN_KEY1_INT); // reset key1 flag
-	R16_PA_INT_EN |= (PIN_KEY1_INT); // enable key1 interrupt
-
-	// charge stt interrupt
-	R16_PA_INT_MODE |= (PIN_CHARGE_STT_INT); // edge mode, should go to ch32fun.h
 	funDigitalWrite(PIN_CHARGE_STT, FUN_LOW); // falling edge
 
 	NVIC_EnableIRQ(GPIOA_IRQn);
-	R16_PA_INT_IF = (PIN_CHARGE_STT_INT); // reset key1 flag
-	R16_PA_INT_EN |= (PIN_CHARGE_STT_INT); // enable key1 interrupt
+	R16_PA_INT_IF = (PIN_KEY1_INT | PIN_CHARGE_STT_INT); // reset key1 and charge stt flags
+	R16_PA_INT_EN |= (PIN_KEY1_INT | PIN_CHARGE_STT_INT); // enable key1 and charge stt interrupts
 
 	// key2 interrupt
 	R16_PIN_ALTERNATE |= RB_PIN_INTX; // set PB8 interrupt to PB22 (PIN_KEY2_INT points to PB8)
@@ -177,18 +183,19 @@ void scheduled_wakeup_task() {
 }
 
 void key1_pressed() {
-
+	blink(3);
 }
 
 void key2_pressed() {
 	blink(2);
-	// if(IS_CHARGING) {
+	if(IS_CHARGING) {
+		DCDCEnable(); // this seems to be needed!?
 		jump_isprom();
-	// }
+	}
 }
 
 void charger_connected() {
-
+	blink(3);
 }
 
 
@@ -198,10 +205,8 @@ int main() {
 	// GPIO setup
 	funGpioInitAll(); // no-op on ch5xx
 	GPIOSetup();
-	funPinMode( LED, GPIO_CFGLR_OUT_2Mhz_PP ); // DEBUG led on board, not on badge
 
 	// Sleep setup
-	DCDCEnable(); // Enable the internal DCDC
 	LSIEnable(); // Disable LSE, enable LSI
 	RTCInit(); // Set the RTC counter to 0 and enable RTC Trigger
 	SleepInit(); // Enable wakeup from sleep by RTC, and enable RTC IRQ
@@ -231,6 +236,5 @@ int main() {
 		// closing matters
 		wakeup_source = IRQ_NONE;
 		LowPower( MS_TO_RTC(WAKEUP_INTERVAL_MS), (RB_PWR_RAM2K | RB_PWR_RAMX | RB_PWR_EXTEND) );
-		DCDCEnable(); // During low power mode, the DCDC is disabled so we need to enable it
 	}
 }
