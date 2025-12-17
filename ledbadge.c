@@ -3,7 +3,7 @@
 
 #define MATRIX_NROW        11
 #define MATRIX_NCOL        44
-#define WAKEUP_INTERVAL_MS (3 * 1000) // 3 seconds
+#define WAKEUP_INTERVAL_MS (30 * 1000) // 3 seconds
 #define FB_NCOL            (MATRIX_NCOL /2) // number of columns in framebuffer
 
 #define PIN_CHARGE_STT     PA0
@@ -277,10 +277,10 @@ void key1_pressed() {
 
 void key2_pressed() {
 	blink_2col(1, 21, 0b110000 << MATRIX_NROW); // x=43
-	// if(IS_CHARGING) {
+	if(IS_CHARGING) {
 		DCDCEnable(); // this seems to be needed!?
 		jump_isprom();
-	// }
+	}
 }
 
 void charger_connected() {
@@ -324,6 +324,14 @@ int main() {
 
 		// closing matters
 		wakeup_source = IRQ_NONE;
-		LowPower( MS_TO_RTC(WAKEUP_INTERVAL_MS), (RB_PWR_RAM2K | RB_PWR_RAMX | RB_PWR_EXTEND) );
+		if(IS_CHARGING) {
+			for(int i = 0; i < FB_NCOL; i++) {
+				framebuffer[i] = i;
+			}
+			blink_framebuffer();
+		}
+		else {
+			LowPower( MS_TO_RTC(WAKEUP_INTERVAL_MS), (RB_PWR_RAM2K | RB_PWR_RAMX | RB_PWR_EXTEND) );
+		}
 	}
 }
