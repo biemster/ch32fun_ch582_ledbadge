@@ -5,7 +5,6 @@
 #define MATRIX_NCOL        44
 #define WAKEUP_INTERVAL_MS (3 * 1000) // 3 seconds
 #define FB_NCOL            (MATRIX_NCOL /2) // number of columns in framebuffer
-#define FB_COL_DURATION_MS 1 // time per column to be lit
 
 #define PIN_CHARGE_STT     PA0
 #define PIN_CHARGE_STT_INT PIN_CHARGE_STT
@@ -154,7 +153,10 @@ void blink_2col(int ms, int col, uint32_t y_coords) {
 		y_coords >>= 1;
 	}
 
-	LowPowerIdle( MS_TO_RTC(ms) );
+	if(ms) {
+		LowPowerIdle( MS_TO_RTC(ms) );
+	}
+
 	for(int i = 0; i < NLINES; i++) {
 		funPinMode( led_lines[i], GPIO_CFGLR_IN_FLOAT );
 	}
@@ -162,7 +164,7 @@ void blink_2col(int ms, int col, uint32_t y_coords) {
 
 void blink_framebuffer() {
 	for(int i = 0; i < FB_NCOL; i++) {
-		blink_2col(FB_COL_DURATION_MS, i, framebuffer[i]);
+		blink_2col(0, i, framebuffer[i]);
 	}
 }
 
@@ -268,7 +270,7 @@ void key1_pressed() {
 	for(int i = 0; i < FB_NCOL; i++) {
 		framebuffer[i] = 0xFFFFFFFF;
 	}
-	for(int s = 0; s < 10; s++) {
+	for(int s = 0; s < 100; s++) {
 		blink_framebuffer();
 	}
 }
