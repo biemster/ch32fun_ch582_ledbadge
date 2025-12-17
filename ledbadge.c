@@ -1,9 +1,10 @@
 #include <stdio.h>
 #include "ch32fun.h"
+#include "iSLER.h"
 
 #define MATRIX_NROW        11
 #define MATRIX_NCOL        44
-#define WAKEUP_INTERVAL_MS (30 * 1000) // 3 seconds
+#define WAKEUP_INTERVAL_MS (3 * 1000) // 3 seconds
 #define FB_NCOL            (MATRIX_NCOL /2) // number of columns in framebuffer
 
 #define PIN_CHARGE_STT     PA0
@@ -12,9 +13,16 @@
 #define PIN_KEY1_INT       PIN_KEY1
 #define PIN_KEY2           PB22
 #define PIN_KEY2_INT       PB8 // ch582 is weird, PB22 interrupt comes in on PB8 bit in irq flag
+
 #define ADC_VBAT_CHANNEL   14
+#define VBAT_100           3500 // mV 100% (the chip is powered through a voltage divider, corresponds to ~4200mV)
+#define VBAT_0             2900 // mV 0% (the chip is powered through a voltage divider, corresponds to ~3500mV)
+
+#define ACCESS_ADDRESS     0x8E89BED6 // the "BED6" address for BLE advertisements
+#define ROM_CFG_MAC_ADDR   0x7F018 // should go to ch5xxhw.h
 
 #define IS_CHARGING        (funDigitalRead(PIN_CHARGE_STT) == 0)
+
 
 typedef enum {
 	ADC_FREQ_DIV_10 = 0b00,		// 32/10 = 3.2MHz
@@ -41,6 +49,13 @@ typedef enum {
 static volatile irq_source wakeup_source;
 static volatile int gs_vbat_mV;
 static volatile uint32_t framebuffer[FB_NCOL];
+
+__attribute__((aligned(4))) uint8_t adv[] = {
+		0x02, 0x16, // header for LL: PDU + frame length
+		0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // MAC (reversed)
+		0x04, 0x16, 0x0F, 0x18, 55, // battery (55%, note the missing 0x)
+		0x09, 0x09, 'l','e','d','b','a','d','g','e'}; // 0x09: "Complete Local Name"
+uint8_t adv_channels[] = {37,38,39};
 
 #define LINE_A PA15
 #define LINE_B PB18
@@ -255,14 +270,47 @@ void update_battery_voltage_mV() {
 	gs_vbat_mV = ((1050 * R16_ADC_DATA) / 512) - (1050 * 3); // -12dB: vref * (raw/512 - 3)
 }
 
+uint8_t battery_percent() {
+	// just linear between 100% and 0%
+	int charge_available = gs_vbat_mV - VBAT_0;
+	int percent = (charge_available * 100) / (VBAT_100 - VBAT_0);
+	percent = (percent < 0) ? 0:
+			(percent > 100) ? 100:
+							percent;
+	return (uint8_t)percent;
+}
+
+void advertise_BLE() {
+	uint32_t MAC = *(vu32*)ROM_CFG_MAC_ADDR;
+	adv[4] = (uint8_t)(MAC >> 24);
+	adv[5] = (uint8_t)(MAC >> 16);
+	adv[6] = (uint8_t)(MAC >> 8);
+	adv[7] = (uint8_t)MAC;
+	MAC = *(vu32*)(ROM_CFG_MAC_ADDR +4);
+	adv[2] = (uint8_t)(MAC >> 8);
+	adv[3] = (uint8_t)MAC;
+	adv[12] = battery_percent();
+
+	for(int c = 0; c < sizeof(adv_channels); c++) {
+		Frame_TX(ACCESS_ADDRESS, adv, sizeof(adv), adv_channels[c], PHY_1M);
+	}
+}
+
+static volatile uint32_t wakeups;
 void scheduled_wakeup_task() {
-	blink_single(1, 0,0);
-	blink_single(1, 43,0);
-	blink_single(1, 43,10);
-	blink_single(1, 0,10);
-	blink_2col(1, 1, 0b11111111111); // x=2
-	blink_2col(1, 20, (0b11111111111 << MATRIX_NROW)); // x=41
+	wakeups++;
+
 	update_battery_voltage_mV();
+	advertise_BLE();
+
+	if(wakeups % 10 == 0) {
+		blink_single(1, 0,0);
+		blink_single(1, 43,0);
+		blink_single(1, 43,10);
+		blink_single(1, 0,10);
+		blink_2col(1, 1, 0b11111111111); // x=2
+		blink_2col(1, 20, (0b11111111111 << MATRIX_NROW)); // x=41
+	}
 }
 
 void key1_pressed() {
@@ -300,6 +348,10 @@ int main() {
 	RTCInit(); // Set the RTC counter to 0 and enable RTC Trigger
 	SleepInit(); // Enable wakeup from sleep by RTC, and enable RTC IRQ
 
+	// RF setup
+	uint8_t txPower = LL_TX_POWER_0_DBM;
+	RFCoreInit(txPower);
+
 	// Some one-off startup stuff
 	blink_single(1, 23,5); // middle
 
@@ -332,6 +384,7 @@ int main() {
 		}
 		else {
 			LowPower( MS_TO_RTC(WAKEUP_INTERVAL_MS), (RB_PWR_RAM2K | RB_PWR_RAMX | RB_PWR_EXTEND) );
+			RFCoreInit(txPower); // RF wakes up in an odd state, we need to reinit after sleep
 		}
 	}
 }
