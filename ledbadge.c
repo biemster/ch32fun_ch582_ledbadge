@@ -82,11 +82,7 @@ static u32 led_lines[] = {
 //   -----------------------------------------------------------------
 // 3 | 0,7 | 0,8 | ...
 //
-void blink(int ms, int x, int y) {
-	for(int i = 0; i < NLINES; i++) {
-		funPinMode( led_lines[i], GPIO_CFGLR_IN_FLOAT );
-	}
-
+int xy_to_yline(int x, int y) {
 	// wrap around
 	x %= 44;
 	y %= 11;
@@ -108,7 +104,17 @@ void blink(int ms, int x, int y) {
 		y_line++;
 	}
 
-	// now blink
+	return y_line;
+}
+
+void blink_single(int ms, int x, int y) {
+	for(int i = 0; i < NLINES; i++) {
+		funPinMode( led_lines[i], GPIO_CFGLR_IN_FLOAT );
+	}
+
+	int x_line = x / 2;
+	int y_line = xy_to_yline(x,y);
+
 	funPinMode( led_lines[x_line], GPIO_CFGLR_OUT_2Mhz_PP );
 	funPinMode( led_lines[y_line], GPIO_CFGLR_OUT_2Mhz_PP );
 	funDigitalWrite(led_lines[x_line], FUN_HIGH);
@@ -116,6 +122,37 @@ void blink(int ms, int x, int y) {
 	LowPowerIdle( MS_TO_RTC(ms) );
 	funPinMode( led_lines[x_line], GPIO_CFGLR_IN_FLOAT );
 	funPinMode( led_lines[y_line], GPIO_CFGLR_IN_FLOAT );
+}
+
+// 2 columns are connected to a single x coordinate, so we can
+// control 2 columns by holding a single pin HIGH.
+// the first 11 bits in y_coords correspond to y = {0,10} of the even
+// x coordinate, the second 11 bits to the y's of the odd x coordinate
+void blink_2col(int ms, int col, uint32_t y_coords) {
+	for(int i = 0; i < NLINES; i++) {
+		funPinMode( led_lines[i], GPIO_CFGLR_IN_FLOAT );
+	}
+
+	// first bring up the x coordinates
+	funPinMode( led_lines[col], GPIO_CFGLR_OUT_2Mhz_PP );
+	funDigitalWrite(led_lines[col], FUN_HIGH);
+
+	// now gnd the y coordinates
+	int x = col * 2;
+	for(int i = 0; i < (2*11); i++) {
+		if(y_coords & 1) {
+			int y_line = xy_to_yline(x,i);
+			funPinMode( led_lines[y_line], GPIO_CFGLR_OUT_2Mhz_PP );
+			funDigitalWrite(led_lines[y_line], FUN_LOW);
+		}
+		x = (i == 10) ? x+1 : x; // go to next x after 11 ys
+		y_coords >>= 1;
+	}
+
+	LowPowerIdle( MS_TO_RTC(ms) );
+	for(int i = 0; i < NLINES; i++) {
+		funPinMode( led_lines[i], GPIO_CFGLR_IN_FLOAT );
+	}
 }
 
 
@@ -207,19 +244,21 @@ void update_battery_voltage_mV() {
 }
 
 void scheduled_wakeup_task() {
-	blink(1, 0,0);
-	blink(1, 43,0);
-	blink(1, 43,10);
-	blink(1, 0,10);
+	blink_single(1, 0,0);
+	blink_single(1, 43,0);
+	blink_single(1, 43,10);
+	blink_single(1, 0,10);
+	blink_2col(1, 1, 0b11111111111); // x=2
+	blink_2col(1, 20, (0b11111111111 << 11)); // x=41
 	update_battery_voltage_mV();
 }
 
 void key1_pressed() {
-	blink(1, 23,5);
+	blink_2col(1, 21, 0b11 << 11); // x=43
 }
 
 void key2_pressed() {
-	blink(1, 23,5);
+	blink_2col(1, 21, 0b110000 << 11); // x=43
 	// if(IS_CHARGING) {
 		DCDCEnable(); // this seems to be needed!?
 		jump_isprom();
@@ -227,7 +266,7 @@ void key2_pressed() {
 }
 
 void charger_connected() {
-	blink(1, 23,5);
+	blink_2col(1, 21, 0b11110000000 << 11); // x=43
 }
 
 
@@ -244,7 +283,7 @@ int main() {
 	SleepInit(); // Enable wakeup from sleep by RTC, and enable RTC IRQ
 
 	// Some one-off startup stuff
-	blink(1, 23,5); // middle
+	blink_single(1, 23,5); // middle
 
 	while(1) {
 		switch(wakeup_source) {
