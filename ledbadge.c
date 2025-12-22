@@ -13,10 +13,12 @@
 #define PIN_KEY1_INT       PIN_KEY1
 #define PIN_KEY2           PB22
 #define PIN_KEY2_INT       PB8 // ch582 is weird, PB22 interrupt comes in on PB8 bit in irq flag
+#define PIN_VBAT_ADC       PA5
 
-#define ADC_VBAT_CHANNEL   14
-#define VBAT_100           3500 // mV 100% (the chip is powered through a voltage divider, corresponds to ~4200mV)
-#define VBAT_0             2900 // mV 0% (the chip is powered through a voltage divider, corresponds to ~3500mV)
+#define ADC_VBAT_CHANNEL   1
+#define VBAT_100           2900 // mV 100% (the chip is powered through a voltage divider, corresponds to ~4200mV)
+#define VBAT_0             2400 // mV 0% (the chip is powered through a voltage divider, corresponds to ~3500mV)
+#define VBAT_NSAMPLES      20
 
 #define ACCESS_ADDRESS     0x8E89BED6 // the "BED6" address for BLE advertisements
 #define ROM_CFG_MAC_ADDR   0x7F018 // should go to ch5xxhw.h
@@ -232,6 +234,7 @@ void GPIOSetup() {
 	funPinMode( PIN_KEY1, GPIO_CFGLR_IN_PD ); // Set PIN_KEY1 to input, pulldown as keypress is to vcc
 	funPinMode( PIN_KEY2, GPIO_CFGLR_IN_PU ); // Set PIN_KEY2 to input, pullup as keypress is to gnd
 	funPinMode( PIN_CHARGE_STT, GPIO_CFGLR_IN_PU ); // Set PIN_CHARGE_STT to input, pullup as connecting charger makes this go to gnd
+	funPinMode( PIN_VBAT_ADC, GPIO_CFGLR_IN_FLOAT ); // Set PIN_VBAT_ADC to floating input for ADC
 
 	// key1 and charge stt interrupts
 	R16_PA_INT_MODE |= (PIN_KEY1_INT | PIN_CHARGE_STT_INT); // edge mode, should go to ch32fun.h
@@ -262,12 +265,16 @@ void GPIOSetup() {
 void update_battery_voltage_mV() {
 	R8_ADC_CHANNEL = ADC_VBAT_CHANNEL;
 	R8_TKEY_CFG &= ~RB_TKEY_PWR_ON;
-	R8_ADC_CFG = RB_ADC_POWER_ON | (ADC_PGA_GAIN_1_4 << 4) | (ADC_FREQ_DIV_10 << 6);
+	R8_ADC_CFG = RB_ADC_POWER_ON | RB_ADC_BUF_EN | (ADC_PGA_GAIN_1 << 4) | (ADC_FREQ_DIV_10 << 6);
 
-	R8_ADC_CONVERT |= RB_ADC_START;
-	while( R8_ADC_CONVERT & RB_ADC_START );
+	int mV = 0;
+	for(int i = 0; i < VBAT_NSAMPLES; i++) {
+		R8_ADC_CONVERT |= RB_ADC_START;
+		while( R8_ADC_CONVERT & RB_ADC_START );
+		mV += (R16_ADC_DATA & RB_ADC_DATA);
+	}
 
-	gs_vbat_mV = ((1050 * R16_ADC_DATA) / 512) - (1050 * 3); // -12dB: vref * (raw/512 - 3)
+	gs_vbat_mV = mV / VBAT_NSAMPLES;
 }
 
 uint8_t battery_percent() {
