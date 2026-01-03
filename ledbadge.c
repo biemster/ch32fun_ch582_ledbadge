@@ -351,9 +351,6 @@ void scheduled_wakeup_task() {
 
 void key1_pressed() {
 	blink_2col(1, 21, 0b11 << MATRIX_NROW); // x=43
-	for(int i = 0; i < FB_NCOL; i++) {
-		framebuffer[i] = 0xFFFFFFFF;
-	}
 	for(int s = 0; s < 100; s++) {
 		blink_framebuffer();
 	}
