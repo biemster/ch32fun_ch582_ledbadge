@@ -1,6 +1,6 @@
-#include <stdio.h>
 #include "ch32fun.h"
 #include "iSLER.h"
+#include "fsusb.h"
 
 #define MATRIX_NROW        11
 #define MATRIX_NCOL        44
@@ -217,6 +217,35 @@ void RTC_IRQHandler() {
 	wakeup_source = IRQ_RTC;
 }
 
+int HandleSetupCustom( struct _USBState * ctx, int setup_code) {
+	return 0;
+}
+
+int HandleInRequest( struct _USBState * ctx, int endp, uint8_t * data, int len ) {
+	return 0;
+}
+
+__HIGH_CODE
+void HandleDataOut( struct _USBState * ctx, int endp, uint8_t * data, int len ) {
+	// this is actually the data rx handler
+	if( endp == USB_EP_RX ) {
+		if(len == 4 && ((uint32_t*)data)[0] == 0x010001a2) {
+			USBFSReset();
+			funPinMode( PB10, GPIO_CFGLR_IN_PD ); // Set USBD- to pulldown
+			funPinMode( PB11, GPIO_CFGLR_IN_PD ); // Set USBD+ to pulldown
+			jump_isprom();
+		}
+		else {
+			int fb_side = data[0] -1; // 1 for left, 2 for right
+			for(int i = 0; i < (len -1); i++) {
+				((uint8_t*)framebuffer)[i +(fb_side*22*2)] = data[i +1];
+			}
+		}
+
+		ctx->USBFS_Endp_Busy[USB_EP_RX] = 0;
+	}
+}
+
 void allPinPullUp(void)
 {
 	R32_PA_DIR = 0; //Direction input
@@ -355,6 +384,9 @@ int main() {
 	RTCInit(); // Set the RTC counter to 0 and enable RTC Trigger
 	SleepInit(); // Enable wakeup from sleep by RTC, and enable RTC IRQ
 
+	// USB setup
+	USBFSSetup();
+
 	// RF setup
 	uint8_t txPower = LL_TX_POWER_0_DBM;
 	RFCoreInit(txPower);
@@ -384,9 +416,6 @@ int main() {
 		// closing matters
 		wakeup_source = IRQ_NONE;
 		if(IS_CHARGING) {
-			for(int i = 0; i < FB_NCOL; i++) {
-				framebuffer[i] = i;
-			}
 			blink_framebuffer();
 		}
 		else {
