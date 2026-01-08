@@ -14,6 +14,8 @@
 #define PIN_KEY2           PB22
 #define PIN_KEY2_INT       PB8 // ch582 is weird, PB22 interrupt comes in on PB8 bit in irq flag
 #define PIN_VBAT_ADC       PA5
+#define PIN_USBM           PB10
+#define PIN_USBP           PB11
 
 #define ADC_VBAT_CHANNEL   1
 #define VBAT_100           2900 // mV 100% (the chip is powered through a voltage divider, corresponds to ~4200mV)
@@ -23,7 +25,7 @@
 #define ACCESS_ADDRESS     0x8E89BED6 // the "BED6" address for BLE advertisements
 #define ROM_CFG_MAC_ADDR   0x7F018 // should go to ch5xxhw.h
 
-#define IS_CHARGING        (funDigitalRead(PIN_CHARGE_STT) == 0)
+#define IS_CHARGING        (funDigitalRead(PIN_CHARGE_STT) == FUN_LOW)
 
 
 typedef enum {
@@ -46,9 +48,16 @@ typedef enum {
 	IRQ_KEY1,
 	IRQ_KEY2,
 	IRQ_CHARGE_STT,
-} irq_source;
+} irq_source_t;
 
-static volatile irq_source wakeup_source;
+typedef enum {
+	MODE_INIT = 0,
+	MODE_USB,
+	MODE_WIRELESS,
+} operation_mode_t;
+
+static volatile irq_source_t wakeup_source;
+static volatile operation_mode_t opmode;
 static volatile int gs_vbat_mV;
 static volatile uint32_t framebuffer[FB_NCOL];
 
@@ -231,8 +240,8 @@ void HandleDataOut( struct _USBState * ctx, int endp, uint8_t * data, int len ) 
 	if( endp == USB_EP_RX ) {
 		if(len == 4 && ((uint32_t*)data)[0] == 0x010001a2) {
 			USBFSReset();
-			funPinMode( PB10, GPIO_CFGLR_IN_PD ); // Set USBD- to pulldown
-			funPinMode( PB11, GPIO_CFGLR_IN_PD ); // Set USBD+ to pulldown
+			funPinMode( PIN_USBM, GPIO_CFGLR_IN_PD ); // Set USBD- to pulldown
+			funPinMode( PIN_USBP, GPIO_CFGLR_IN_PD ); // Set USBD+ to pulldown
 			jump_isprom();
 		}
 		else {
@@ -337,15 +346,17 @@ void scheduled_wakeup_task() {
 	wakeups++;
 
 	update_battery_voltage_mV();
-	advertise_BLE();
+	if(opmode == MODE_WIRELESS) {
+		advertise_BLE();
 
-	if(wakeups % 10 == 0) {
-		blink_single(1, 0,0);
-		blink_single(1, 43,0);
-		blink_single(1, 43,10);
-		blink_single(1, 0,10);
-		blink_2col(1, 1, 0b11111111111); // x=2
-		blink_2col(1, 20, (0b11111111111 << MATRIX_NROW)); // x=41
+		if(wakeups % 10 == 0) {
+			blink_single(1, 0,0);
+			blink_single(1, 43,0);
+			blink_single(1, 43,10);
+			blink_single(1, 0,10);
+			blink_2col(1, 1, 0b11111111111); // x=2
+			blink_2col(1, 20, (0b11111111111 << MATRIX_NROW)); // x=41
+		}
 	}
 }
 
@@ -358,7 +369,7 @@ void key1_pressed() {
 
 void key2_pressed() {
 	blink_2col(1, 21, 0b110000 << MATRIX_NROW); // x=43
-	if(IS_CHARGING) {
+	if(opmode == MODE_USB) {
 		DCDCEnable(); // this seems to be needed!?
 		jump_isprom();
 	}
@@ -376,13 +387,21 @@ int main() {
 	funGpioInitAll(); // no-op on ch5xx
 	GPIOSetup();
 
-	// Sleep setup
+	// Idle/Sleep setup
 	LSIEnable(); // Disable LSE, enable LSI
 	RTCInit(); // Set the RTC counter to 0 and enable RTC Trigger
 	SleepInit(); // Enable wakeup from sleep by RTC, and enable RTC IRQ
 
-	// USB setup
-	USBFSSetup();
+	if(funDigitalRead(PIN_USBM) == FUN_LOW && funDigitalRead(PIN_USBP) == FUN_LOW) {
+		// USB setup
+		USBFSSetup();
+		opmode = MODE_USB;
+	}
+	else {
+		funPinMode(PIN_USBM, GPIO_CFGLR_IN_PU);
+		funPinMode(PIN_USBP, GPIO_CFGLR_IN_PU);
+		opmode = MODE_WIRELESS;
+	}
 
 	// RF setup
 	uint8_t txPower = LL_TX_POWER_0_DBM;
@@ -410,12 +429,25 @@ int main() {
 			break;
 		}
 
-		// closing matters
 		wakeup_source = IRQ_NONE;
-		if(IS_CHARGING) {
+		if(opmode == MODE_USB) {
 			blink_framebuffer();
+			if(!IS_CHARGING) {
+				USBFSReset();
+				asm volatile ( "j 0x00" );
+			}
+
+			//get the rtc current time
+			uint32_t rtc_current = (uint32_t) R16_RTC_CNT_LSI | ( (uint32_t) R16_RTC_CNT_DIV1 << 16 );
+			if(R32_RTC_TRIG < rtc_current) {
+				RTCTrigger( MS_TO_RTC(WAKEUP_INTERVAL_MS) );
+			}
 		}
-		else {
+		else if (opmode == MODE_WIRELESS) {
+			if(IS_CHARGING) {
+				asm volatile ( "j 0x00" );
+			}
+
 			LowPower( MS_TO_RTC(WAKEUP_INTERVAL_MS), (RB_PWR_RAM2K | RB_PWR_RAMX | RB_PWR_EXTEND) );
 			RFCoreInit(txPower); // RF wakes up in an odd state, we need to reinit after sleep
 		}
